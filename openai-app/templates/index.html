@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>ChatGPT-Style UI with Throttling</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-main:    #343541;
+      --bg-sidebar: #202123;
+      --bg-input:   #40414f;
+      --txt-light:  #e5e5e5;
+      --txt-dark:   #111827;
+      --accent:     #10a37f;
+      --muted:      #5b5b67;
+    }
+    * { box-sizing: border-box; margin:0; padding:0; }
+    body,html { height:100%; font-family:'Inter',sans-serif; background:var(--bg-main); color:var(--txt-light); }
+    body { display:flex; overflow:hidden; }
+
+    /* --- Top Bar --- */
+    .topbar {
+      position:fixed; top:0; left:0; right:0; height:48px;
+      background:var(--bg-main); display:flex; align-items:center;
+      justify-content:space-between; padding:0 1rem; z-index:10;
+    }
+    .model-select, .share-btn { font-weight:500; cursor:pointer; }
+
+    /* --- Sidebar --- */
+    .sidebar {
+      width:260px; margin-top:48px; background:var(--bg-sidebar);
+      display:flex; flex-direction:column;
+    }
+    .new-chat {
+      margin:1rem; padding:.75rem; background:#343541; border:none;
+      border-radius:4px; display:flex; align-items:center; gap:.5rem;
+      color:white; font-weight:500; cursor:pointer;
+    }
+    .search-chats {
+      margin:0 1rem 1rem; padding:.5rem; background:#343541;
+      border-radius:4px; display:flex; align-items:center;
+    }
+    .search-chats input {
+      flex:1; background:transparent; border:none;
+      outline:none; color:white; font-size:.9rem;
+    }
+    .library-label {
+      margin:0 1rem .5rem; font-size:.75rem;
+      text-transform:uppercase; color:var(--muted);
+    }
+    .chat-list { flex:1; overflow-y:auto; padding:0 .5rem; }
+    .chat-item {
+      display:flex; align-items:center; gap:.75rem; padding:.6rem .8rem;
+      margin-bottom:.4rem; background:#343541; border-radius:4px;
+      cursor:pointer; transition:background .2s;
+    }
+    .chat-item:hover { background:#3b3b47; }
+
+    /* --- Main Chat Area --- */
+    .main {
+      flex:1; margin-top:48px; display:flex; flex-direction:column;
+    }
+    .main-header {
+      padding:1rem; border-bottom:1px solid var(--muted);
+      font-weight:500; color:var(--txt-light);
+    }
+    .messages {
+      flex:1; padding:1rem; overflow-y:auto;
+      background:var(--bg-main);
+    }
+    .message {
+      max-width:70%; margin-bottom:1rem; padding:.75rem 1rem;
+      border-radius:8px; line-height:1.4; word-break:break-word;
+    }
+    .message.assistant {
+      background:#4e4f5a; color:var(--txt-light); margin-right:auto;
+    }
+    .message.user {
+      background:var(--accent); color:white; margin-left:auto;
+    }
+
+    /* --- Bottom Input Bar --- */
+    .input-bar {
+      display:flex; align-items:center; padding:.75rem 1rem;
+      background:var(--bg-input); gap:.5rem;
+    }
+    .input-bar button, .input-bar .tools-btn {
+      background:none; border:none; cursor:pointer;
+      color:var(--txt-light); padding:.5rem;
+    }
+    .input-bar textarea {
+      flex:1; resize:none; border:none; outline:none;
+      border-radius:4px; padding:.75rem; height:38px;
+      background:var(--bg-main); color:var(--txt-light);
+      font-size:1rem;
+    }
+    .input-bar textarea::placeholder { color:var(--muted); }
+
+    /* --- Typing Indicator (3 dots) --- */
+    .typing {
+      display:inline-block; width:28px; text-align:center;
+    }
+    .typing span {
+      display:inline-block; width:6px; height:6px; margin:0 2px;
+      background:var(--muted); border-radius:50%; opacity:0;
+      animation:blink 1s infinite;
+    }
+    .typing span:nth-child(1) { animation-delay:0s; }
+    .typing span:nth-child(2) { animation-delay:.2s; }
+    .typing span:nth-child(3) { animation-delay:.4s; }
+    @keyframes blink {
+      0%,80%,100% { opacity:0; }
+      40% { opacity:1; }
+    }
+  </style>
+</head>
+<body>
+  <!-- Top Bar -->
+  <div class="topbar">
+    <div class="model-select">ChatGPT 4o ▼</div>
+    <div class="share-btn">Share ↗</div>
+  </div>
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <button class="new-chat">＋ New chat</button>
+    <div class="search-chats">🔍<input placeholder="Search chats…" /></div>
+    <div class="library-label">Library</div>
+    <div class="chat-list">
+      <div class="chat-item">💬 Example conversation</div>
+      <!-- ... -->
+    </div>
+  </aside>
+
+  <!-- Main Chat -->
+  <main class="main">
+    <div class="main-header">Example conversation</div>
+    <div class="messages" id="messages">
+      <div class="message assistant">Hello! How can I assist you?</div>
+    </div>
+
+    <!-- Input Bar -->
+    <div class="input-bar">
+      <button title="New message">＋</button>
+      <button class="tools-btn">Tools</button>
+      <textarea id="input" placeholder="Ask anything…"></textarea>
+      <button title="Voice">🎤</button>
+      <button id="send" title="Send" disabled>➤</button>
+    </div>
+  </main>
+
+  <script>
+    const inputEl    = document.getElementById('input');
+    const sendBtn    = document.getElementById('send');
+    const messagesEl = document.getElementById('messages');
+    let inFlight     = false;
+
+    // Enable send button when there is text and no request in flight
+    inputEl.addEventListener('input', () => {
+      sendBtn.disabled = inFlight || !inputEl.value.trim();
+    });
+
+    async function send() {
+      const text = inputEl.value.trim();
+      if (!text || inFlight) return;
+
+      // 1) Mark as "in flight"
+      inFlight = true;
+      sendBtn.disabled = true;
+      inputEl.disabled = true;
+
+      // 2) Render user bubble
+      const userBubble = document.createElement('div');
+      userBubble.className = 'message user';
+      userBubble.textContent = text;
+      messagesEl.appendChild(userBubble);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+
+      // 3) Render typing indicator
+      const typingWrapper = document.createElement('div');
+      typingWrapper.className = 'message assistant';
+      typingWrapper.innerHTML = `
+        <span class="typing">
+          <span></span><span></span><span></span>
+        </span>`;
+      messagesEl.appendChild(typingWrapper);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+
+      // 4) Call your backend
+      try {
+        const res = await fetch('/chat', {
+          method: 'POST',
+          headers: { 'Content-Type':'application/json' },
+          body: JSON.stringify({ message: text })
+        });
+        const { reply } = await res.json();
+
+        // Remove typing indicator
+        messagesEl.removeChild(typingWrapper);
+
+        // Render AI bubble
+        const botBubble = document.createElement('div');
+        botBubble.className = 'message assistant';
+        botBubble.textContent = reply ?? '⚠️ Error';
+        messagesEl.appendChild(botBubble);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      } catch(err) {
+        console.error(err);
+      } finally {
+        // 5) Reset state
+        inFlight = false;
+        inputEl.disabled = false;
+        inputEl.value = '';
+        sendBtn.disabled = true;
+        inputEl.focus();
+      }
+    }
+
+    sendBtn.addEventListener('click', send);
+    // also allow Ctrl+Enter
+    inputEl.addEventListener('keydown', e => {
+      if (e.ctrlKey && e.key === 'Enter') send();
+    });
+  </script>
+</body>
+</html>
